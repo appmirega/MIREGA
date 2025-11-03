@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { supabase } from '../../lib/supabase';
 import { Shield, User, Mail, Phone, Eye, EyeOff, Key, X, AlertCircle, CheckCircle } from 'lucide-react';
+// 👇 NUEVO: usamos el servicio que llama a /api/users/create en Vercel
+import { createUserViaApi } from '../../services/userService';
 
 interface AdminFormProps {
   onSuccess?: () => void;
@@ -42,34 +43,14 @@ export function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
     }
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-
-      if (!session) {
-        throw new Error('No hay sesión activa');
-      }
-
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-user`;
-
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          email: formData.email,
-          password: formData.password,
-          full_name: formData.full_name,
-          phone: formData.phone || null,
-          role: 'admin',
-        }),
+      // 👇 LLAMADA NUEVA: a Vercel API con el token actual (lo obtiene el servicio)
+      await createUserViaApi({
+        email: formData.email,
+        password: formData.password,
+        full_name: formData.full_name,
+        phone: formData.phone || undefined,
+        role: 'admin',
       });
-
-      const result = await response.json();
-
-      if (!result.success) {
-        throw new Error(result.error || 'Error al crear el administrador');
-      }
 
       setSuccess(`Administrador ${formData.full_name} creado exitosamente`);
       setFormData({
@@ -81,11 +62,12 @@ export function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
       });
 
       if (onSuccess) {
-        setTimeout(() => onSuccess(), 2000);
+        // pequeño delay para que el usuario vea el mensaje
+        setTimeout(() => onSuccess(), 1200);
       }
     } catch (err: any) {
-      console.error('Error:', err);
-      setError(err.message || 'Error al crear el administrador');
+      console.error('Error creando administrador:', err);
+      setError(err?.message || 'Error al crear el administrador');
     } finally {
       setLoading(false);
     }
