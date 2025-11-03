@@ -8,8 +8,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const { email, password, full_name, phone, role } = req.body;
-
+    const { email, password, full_name, phone, role } = req.body || {};
     if (!email || !password || !full_name || !role) {
       return res.status(400).json({ error: 'Faltan campos obligatorios' });
     }
@@ -18,19 +17,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       email,
       password,
       full_name,
-      phone,
+      phone: phone ?? null,
       role,
     });
 
-    // Si el usuario ya existía y fue upsert exitosamente
-    if (result?.alreadyExists) {
+    // Si el usuario ya existía lo tratamos como "éxito con 409"
+    if (result.alreadyExists) {
       return res.status(409).json({
         success: true,
-        message: `El usuario ${email} ya existía y fue actualizado correctamente.`,
+        code: 'USER_ALREADY_EXISTS',
+        message: `El usuario ${email} ya existía y su perfil fue actualizado.`,
+        user_id: result.user_id,
       });
     }
 
-    // Creación exitosa
     return res.status(200).json({
       success: true,
       message: `Usuario ${full_name} creado correctamente.`,
@@ -38,19 +38,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (error: any) {
     console.error('Error en /api/users/create:', error);
-
-    // Manejo de error por duplicado explícito
-    if (error.message?.includes('duplicate key value')) {
-      return res.status(409).json({
-        success: true,
-        message: 'El usuario ya existe en la base de datos.',
-      });
-    }
-
-    // Otros errores
     return res.status(400).json({
       success: false,
-      error: error.message || 'Error inesperado al crear el usuario.',
+      error: error?.message ?? 'Error inesperado al crear el usuario',
     });
   }
 }
