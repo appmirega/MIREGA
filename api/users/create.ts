@@ -11,133 +11,112 @@ const setCORS = (res: VercelResponse) => {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCORS(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!SUPABASE_URL || !SERVICE_KEY) {
-    return res.status(500).json({ error: 'Server configuration error' });
+  if (req.method !== 'POST') {
+    return res.status(405).json({ success: false, error: 'Method not allowed' });
   }
 
-  console.log('USERS_CREATE v4'); // <— marca para verificar despliegue
-
   try {
-    const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
+    const SUPABASE_URL = process.env.SUPABASE_URL!;
+    const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+    const supabase = createClient(SUPABASE_URL, SERVICE_KEY);
 
-    // 1) Autenticación del solicitante
-    const bearer = req.headers.authorization || '';
-    const token = bearer.replace(/^Bearer\s+/i, '');
-    const { data: me, error: meErr } = await admin.auth.getUser(token);
-    if (meErr || !me?.user) return res.status(401).json({ error: 'Unauthorized' });
+    // 1) Autenticar llamador y verificar rol
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ success: false, error: 'No auth token' });
 
-    // 2) Verificar rol (admin o developer)
-    const { data: myProfile, error: profErr } = await admin
+    const { data: me, error: meErr } = await supabase.auth.getUser(token);
+    if (meErr || !me.user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+    const { data: callerProfile } = await supabase
       .from('profiles')
       .select('role')
       .eq('id', me.user.id)
       .single();
-    if (profErr || !myProfile) return res.status(403).json({ error: 'Profile not found' });
 
-    if (!['developer', 'admin'].includes(myProfile.role)) {
-      return res.status(403).json({ error: 'Insufficient permissions' });
+    if (!callerProfile) return res.status(403).json({ success: false, error: 'Profile not found' });
+    if (callerProfile.role !== 'developer' && callerProfile.role !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Insufficient permissions' });
+    }
+    // Un admin no crea developers
+    if (callerProfile.role === 'admin' && req.body?.role === 'developer') {
+      return res.status(403).json({ success: false, error: 'Admins cannot create developers' });
     }
 
-    type Body = {
-      email: string;
-      password: string;
-      full_name: string;
-      phone?: string | null;
-      role: 'admin' | 'technician' | 'client' | 'developer';
-    };
+    // 2) Datos de entrada
+    const { email, password, full_name, phone, role } = req.body || {};
+    if (!email || !password || !full_name || !role) {
+      return res.status(400).json({ success: false, error: 'Missing fields' });
+    }
 
-    const body = req.body as Body;
-
-    // 3) Crear usuario en Auth (o recuperar si ya existe)
+    // 3) Crear el usuario en Auth (o “recuperarlo” si ya existe)
     let userId: string | null = null;
 
-    const { data: created, error: createErr } = await admin.auth.admin.createUser({
-      email: body.email,
-      password: body.password,
+    const { data: created, error: createErr } = await supabase.auth.admin.createUser({
+      email,
+      password,
       email_confirm: true,
-      user_metadata: { full_name: body.full_name, role: body.role },
+      user_metadata: { full_name, role },
     });
 
-    if (createErr) {
-      const already =
-        /already|exists|registered/i.test(createErr.message || '') ||
-        (createErr as any)?.status === 422 ||
-        (createErr as any)?.code === 'user_already_exists';
-
-      if (!already) {
-        return res.status(400).json({ error: `auth.createUser failed: ${createErr.message}` });
-      }
-
-      const { data: byEmail, error: byEmailErr } = await admin.auth.admin.getUserByEmail(body.email);
-      if (byEmailErr || !byEmail?.user) {
-        return res.status(400).json({ error: `User exists but cannot fetch by email: ${byEmailErr?.message}` });
-      }
-      userId = byEmail.user.id;
+    if (created?.user?.id) {
+      userId = created.user.id;
     } else {
-      userId = created?.user?.id ?? null;
-    }
-
-    if (!userId) return res.status(400).json({ error: 'Cannot determine user id' });
-
-    // 4) Perfil: buscar primero
-    const { data: existing, error: selErr } = await admin
-      .from('profiles')
-      .select('id')
-      .eq('id', userId)
-      .maybeSingle();
-
-    if (selErr) {
-      // si hay política RLS rara, aun así continuamos e intentamos upsert manual
-      console.log('profiles select warning:', selErr.message);
-    }
-
-    const profilePayload = {
-      id: userId,
-      role: body.role,
-      full_name: body.full_name,
-      email: body.email,
-      phone: body.phone ?? null,
-      is_active: true,
-    };
-
-    if (existing?.id) {
-      // UPDATE idempotente
-      const { error: updErr } = await admin
-        .from('profiles')
-        .update(profilePayload)
-        .eq('id', userId);
-
-      if (updErr) {
-        return res.status(400).json({ error: `profiles update failed: ${updErr.message}` });
-      }
-    } else {
-      // INSERT con tolerancia a carrera (ignora 23505)
-      const { error: insErr } = await admin
-        .from('profiles')
-        .insert(profilePayload);
-
-      if (insErr) {
-        const duplicate = /duplicate key|23505|unique constraint.*profiles_pkey/i.test(insErr.message || '');
-        if (!duplicate) {
-          return res.status(400).json({ error: `profiles insert failed: ${insErr.message}` });
+      // Si ya existe, evitamos fallar: buscamos por email en Auth para obtener su id
+      if (createErr && typeof createErr.message === 'string' && createErr.message.toLowerCase().includes('already')) {
+        // Buscar entre usuarios (paginado básico)
+        let page = 1;
+        const perPage = 1000;
+        while (!userId) {
+          const { data: list, error: listErr } = await supabase.auth.admin.listUsers({ page, perPage });
+          if (listErr) break;
+          const found = list?.users?.find((u) => u.email?.toLowerCase() === String(email).toLowerCase());
+          if (found) userId = found.id;
+          if (!list || list.users.length < perPage) break;
+          page += 1;
         }
-        // Si fue carrera: sin drama, seguimos como éxito.
+      } else if (createErr) {
+        // Error real distinto a "ya existe"
+        return res.status(400).json({ success: false, error: createErr.message || 'auth.createUser failed' });
       }
     }
 
+    if (!userId) {
+      // Si no pudimos obtener id, abortamos
+      return res.status(400).json({ success: false, error: 'Could not resolve user id' });
+    }
+
+    // 4) UPSERT del perfil (idempotente)
+    const { error: upsertErr } = await supabase
+      .from('profiles')
+      .upsert(
+        {
+          id: userId,
+          role,
+          full_name,
+          email,
+          phone: phone || null,
+          is_active: true,
+        },
+        { onConflict: 'id', ignoreDuplicates: true }
+      );
+
+    // Si hubo error distinto a duplicado (23505) lo reportamos; con ignoreDuplicates no debería suceder,
+    // pero lo dejamos defensivo.
+    if (upsertErr && (upsertErr as any).code !== '23505') {
+      return res.status(400).json({ success: false, error: upsertErr.message });
+    }
+
+    // 5) OK siempre que llegamos aquí (creado o ya existente)
+    console.log('USERS_CREATE v4 → OK', { email, userId });
     return res.status(200).json({
       success: true,
       user_id: userId,
-      message: 'Usuario creado/actualizado correctamente',
+      message: `Usuario ${full_name} listo (creado o recuperado)`,
     });
   } catch (e: any) {
-    console.error('USERS_CREATE v4 fatal:', e);
-    return res.status(500).json({ error: e?.message || 'Server error' });
+    console.error('USERS_CREATE v4 → ERROR', e);
+    return res.status(400).json({ success: false, error: e?.message || 'Unknown error' });
   }
 }
