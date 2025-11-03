@@ -1,7 +1,6 @@
 import { useState } from 'react';
+import { supabase } from '../../lib/supabase';
 import { UserPlus, Mail, Phone, Key, X } from 'lucide-react';
-// 👇 NUEVO: usamos el servicio que llama a /api/users/create en Vercel
-import { createUserViaApi } from '../../services/userService';
 
 interface TechnicianFormProps {
   onSuccess?: () => void;
@@ -39,7 +38,6 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
       setLoading(false);
       return;
     }
-
     if (formData.password.length < 8) {
       setError('La contraseña debe tener al menos 8 caracteres');
       setLoading(false);
@@ -47,33 +45,58 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
     }
 
     try {
-      // 👇 LLAMADA NUEVA: a Vercel API con el token actual (el servicio lo obtiene)
-      await createUserViaApi({
-        email: formData.email,
-        password: formData.password,
-        full_name: formData.full_name,
-        phone: formData.phone || undefined,
-        role: 'technician',
-        // Si quieres guardar la especialización, puedes agregarla como metadata
-        // y manejarla en tu endpoint /api/users/create
-        metadata: { specialization: formData.specialization || undefined },
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('No hay sesión activa');
+
+      const resp = await fetch('/api/users/create', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: formData.email,
+          password: formData.password,
+          full_name: formData.full_name,
+          phone: formData.phone || null,
+          role: 'technician',
+        }),
       });
 
-      alert(`Técnico ${formData.full_name} creado exitosamente`);
+      // Intentamos leer JSON; si no, texto bruto para detectar “duplicate/23505”
+      let body: any = null;
+      let raw = '';
+      try { body = await resp.json(); } catch { try { raw = await resp.text(); } catch { raw = ''; } }
 
-      setFormData({
-        full_name: '',
-        email: '',
-        phone: '',
-        specialization: '',
-        password: '',
-        confirmPassword: '',
-      });
+      const errText =
+        (typeof body?.error === 'string' ? body.error : '') + ' ' + raw;
+      const looksDuplicate =
+        /duplicate key|23505|unique constraint.*profiles_pkey/i.test(errText);
 
-      if (onSuccess) onSuccess();
+      if (resp.ok || looksDuplicate) {
+        // ÉXITO: si ya existía lo tratamos igual como ok
+        if (onSuccess) {
+          // Cierra el formulario y regresa a la lista
+          setTimeout(() => onSuccess(), 200);
+          return;
+        }
+        // O, si te quedas en el formulario, limpia los campos
+        setFormData({
+          full_name: '',
+          email: '',
+          phone: '',
+          specialization: '',
+          password: '',
+          confirmPassword: '',
+        });
+        return;
+      }
+
+      // Error real
+      throw new Error(body?.error || raw || 'No se pudo crear el técnico');
     } catch (err: any) {
-      console.error('Error creando técnico:', err);
-      setError(err?.message || 'Error al crear el técnico');
+      setError(err.message || 'Error al crear el técnico');
+      console.error('create technician error:', err);
     } finally {
       setLoading(false);
     }
