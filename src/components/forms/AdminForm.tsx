@@ -195,3 +195,4 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
     </form>
   );
 }
+export { AdminForm };
