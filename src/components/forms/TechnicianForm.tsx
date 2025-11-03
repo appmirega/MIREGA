@@ -7,7 +7,7 @@ interface TechnicianFormProps {
   onCancel?: () => void;
 }
 
-export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
+export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,16 +20,12 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
     confirmPassword: '',
   });
 
-  const specializations = [
-    'Hidráulico',
-    'Electromecánico',
-    'Tracción',
-    'Todos los tipos',
-    'Otro',
-  ];
+  const specializations = ['Hidráulico', 'Electromecánico', 'Tracción', 'Todos los tipos', 'Otro'];
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+
     setLoading(true);
     setError(null);
 
@@ -63,40 +59,23 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
         }),
       });
 
-      // Intentamos leer JSON; si no, texto bruto para detectar “duplicate/23505”
-      let body: any = null;
-      let raw = '';
-      try { body = await resp.json(); } catch { try { raw = await resp.text(); } catch { raw = ''; } }
-
-      const errText =
-        (typeof body?.error === 'string' ? body.error : '') + ' ' + raw;
-      const looksDuplicate =
-        /duplicate key|23505|unique constraint.*profiles_pkey/i.test(errText);
-
-      if (resp.ok || looksDuplicate) {
-        // ÉXITO: si ya existía lo tratamos igual como ok
-        if (onSuccess) {
-          // Cierra el formulario y regresa a la lista
-          setTimeout(() => onSuccess(), 200);
-          return;
-        }
-        // O, si te quedas en el formulario, limpia los campos
-        setFormData({
-          full_name: '',
-          email: '',
-          phone: '',
-          specialization: '',
-          password: '',
-          confirmPassword: '',
-        });
-        return;
+      const result = await resp.json().catch(() => ({}));
+      if (!resp.ok || result?.success === false) {
+        throw new Error(result?.error || 'No se pudo crear el técnico');
       }
 
-      // Error real
-      throw new Error(body?.error || raw || 'No se pudo crear el técnico');
+      // listo (creado o recuperado)
+      setFormData({
+        full_name: '',
+        email: '',
+        phone: '',
+        specialization: '',
+        password: '',
+        confirmPassword: '',
+      });
+      onSuccess?.();
     } catch (err: any) {
       setError(err.message || 'Error al crear el técnico');
-      console.error('create technician error:', err);
     } finally {
       setLoading(false);
     }
@@ -110,27 +89,19 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
           <h2 className="text-2xl font-bold text-slate-900">Nuevo Técnico</h2>
         </div>
         {onCancel && (
-          <button
-            onClick={onCancel}
-            className="p-2 hover:bg-slate-100 rounded-lg transition"
-          >
+          <button onClick={onCancel} className="p-2 hover:bg-slate-100 rounded-lg transition">
             <X className="w-5 h-5 text-slate-600" />
           </button>
         )}
       </div>
 
-      {error && (
-        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-          {error}
-        </div>
-      )}
+      {error && <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>}
 
+      {/* …tu UI original (inputs)… */}
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="md:col-span-2">
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Nombre Completo *
-            </label>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Nombre Completo *</label>
             <input
               type="text"
               required
@@ -172,9 +143,7 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
           </div>
 
           <div className="md:col-span-2">
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Especialización
-            </label>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Especialización</label>
             <select
               value={formData.specialization}
               onChange={(e) => setFormData({ ...formData, specialization: e.target.value })}
@@ -197,9 +166,7 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Contraseña *
-            </label>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Contraseña *</label>
             <input
               type="password"
               required
@@ -212,9 +179,7 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Confirmar Contraseña *
-            </label>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Confirmar Contraseña *</label>
             <input
               type="password"
               required
@@ -224,12 +189,6 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
               placeholder="Repetir contraseña"
               minLength={8}
             />
-          </div>
-
-          <div className="md:col-span-2 bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <p className="text-sm text-blue-800">
-              <strong>Importante:</strong> El técnico recibirá un email a <strong>{formData.email || 'su correo'}</strong> con sus credenciales de acceso al sistema.
-            </p>
           </div>
         </div>
 
