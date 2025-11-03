@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { supabase } from '../../lib/supabase';
 import { UserPlus, Mail, Phone, Key, X } from 'lucide-react';
+// 👇 NUEVO: usamos el servicio que llama a /api/users/create en Vercel
+import { createUserViaApi } from '../../services/userService';
 
 interface TechnicianFormProps {
   onSuccess?: () => void;
@@ -46,34 +47,17 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
     }
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-
-      if (!session) {
-        throw new Error('No hay sesión activa');
-      }
-
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-user`;
-
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          email: formData.email,
-          password: formData.password,
-          full_name: formData.full_name,
-          phone: formData.phone || null,
-          role: 'technician',
-        }),
+      // 👇 LLAMADA NUEVA: a Vercel API con el token actual (el servicio lo obtiene)
+      await createUserViaApi({
+        email: formData.email,
+        password: formData.password,
+        full_name: formData.full_name,
+        phone: formData.phone || undefined,
+        role: 'technician',
+        // Si quieres guardar la especialización, puedes agregarla como metadata
+        // y manejarla en tu endpoint /api/users/create
+        metadata: { specialization: formData.specialization || undefined },
       });
-
-      const result = await response.json();
-
-      if (!result.success) {
-        throw new Error(result.error || 'Error al crear el técnico');
-      }
 
       alert(`Técnico ${formData.full_name} creado exitosamente`);
 
@@ -88,8 +72,8 @@ export function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
 
       if (onSuccess) onSuccess();
     } catch (err: any) {
-      setError(err.message || 'Error al crear el técnico');
-      console.error('Error:', err);
+      console.error('Error creando técnico:', err);
+      setError(err?.message || 'Error al crear el técnico');
     } finally {
       setLoading(false);
     }
