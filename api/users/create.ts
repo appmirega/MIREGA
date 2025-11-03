@@ -2,44 +2,47 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-const cors = (res: VercelResponse) => {
+const setCORS = (res: VercelResponse) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Info, Apikey');
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  cors(res);
+  setCORS(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  try {
-    const SUPABASE_URL = process.env.SUPABASE_URL!;
-    const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    if (!SUPABASE_URL || !SERVICE_KEY) {
-      return res.status(500).json({ error: 'Server configuration error' });
-    }
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!SUPABASE_URL || !SERVICE_KEY) {
+    return res.status(500).json({ error: 'Server configuration error' });
+  }
 
+  console.log('USERS_CREATE v4'); // <— marca para verificar despliegue
+
+  try {
     const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // 1) Auth del solicitante
+    // 1) Autenticación del solicitante
     const bearer = req.headers.authorization || '';
     const token = bearer.replace(/^Bearer\s+/i, '');
-    const { data: meData, error: meErr } = await admin.auth.getUser(token);
-    if (meErr || !meData?.user) return res.status(401).json({ error: 'Unauthorized' });
+    const { data: me, error: meErr } = await admin.auth.getUser(token);
+    if (meErr || !me?.user) return res.status(401).json({ error: 'Unauthorized' });
 
-    // 2) Rol del solicitante
+    // 2) Verificar rol (admin o developer)
     const { data: myProfile, error: profErr } = await admin
       .from('profiles')
       .select('role')
-      .eq('id', meData.user.id)
+      .eq('id', me.user.id)
       .single();
     if (profErr || !myProfile) return res.status(403).json({ error: 'Profile not found' });
 
-    const allowed = myProfile.role === 'developer' || myProfile.role === 'admin';
-    if (!allowed) return res.status(403).json({ error: 'Insufficient permissions' });
+    if (!['developer', 'admin'].includes(myProfile.role)) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
 
     type Body = {
       email: string;
@@ -52,9 +55,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const body = req.body as Body;
 
     // 3) Crear usuario en Auth (o recuperar si ya existe)
-    let newUserId: string | null = null;
+    let userId: string | null = null;
 
-    const { data: createRes, error: createErr } = await admin.auth.admin.createUser({
+    const { data: created, error: createErr } = await admin.auth.admin.createUser({
       email: body.email,
       password: body.password,
       email_confirm: true,
@@ -62,60 +65,79 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     if (createErr) {
-      // Si ya existe el usuario en Auth, lo tratamos como éxito y recuperamos su id
-      const alreadyExists =
+      const already =
         /already|exists|registered/i.test(createErr.message || '') ||
         (createErr as any)?.status === 422 ||
         (createErr as any)?.code === 'user_already_exists';
 
-      if (!alreadyExists) {
+      if (!already) {
         return res.status(400).json({ error: `auth.createUser failed: ${createErr.message}` });
       }
 
-      // Buscar por email
       const { data: byEmail, error: byEmailErr } = await admin.auth.admin.getUserByEmail(body.email);
       if (byEmailErr || !byEmail?.user) {
         return res.status(400).json({ error: `User exists but cannot fetch by email: ${byEmailErr?.message}` });
       }
-      newUserId = byEmail.user.id;
+      userId = byEmail.user.id;
     } else {
-      newUserId = createRes?.user?.id ?? null;
+      userId = created?.user?.id ?? null;
     }
 
-    if (!newUserId) return res.status(400).json({ error: 'Cannot determine user id' });
+    if (!userId) return res.status(400).json({ error: 'Cannot determine user id' });
 
-    // 4) Crear/actualizar perfil de forma IDEMPOTENTE
-    //    onConflict por "id" + ignoreDuplicates para evitar el choque con profiles_pkey
-    const { error: upsertErr } = await admin
+    // 4) Perfil: buscar primero
+    const { data: existing, error: selErr } = await admin
       .from('profiles')
-      .upsert(
-        {
-          id: newUserId,
-          role: body.role,
-          full_name: body.full_name,
-          email: body.email,
-          phone: body.phone ?? null,
-          is_active: true,
-        },
-        { onConflict: 'id', ignoreDuplicates: true }
-      );
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle();
 
-    if (upsertErr) {
-      // Si la BD devuelve igualmente el error de unique (por versiones antiguas),
-      // lo tratamos como éxito.
-      const duplicate =
-        /duplicate key|23505|unique constraint.*profiles_pkey/i.test(upsertErr.message || '');
-      if (!duplicate) {
-        return res.status(400).json({ error: `profiles upsert failed: ${upsertErr.message}` });
+    if (selErr) {
+      // si hay política RLS rara, aun así continuamos e intentamos upsert manual
+      console.log('profiles select warning:', selErr.message);
+    }
+
+    const profilePayload = {
+      id: userId,
+      role: body.role,
+      full_name: body.full_name,
+      email: body.email,
+      phone: body.phone ?? null,
+      is_active: true,
+    };
+
+    if (existing?.id) {
+      // UPDATE idempotente
+      const { error: updErr } = await admin
+        .from('profiles')
+        .update(profilePayload)
+        .eq('id', userId);
+
+      if (updErr) {
+        return res.status(400).json({ error: `profiles update failed: ${updErr.message}` });
+      }
+    } else {
+      // INSERT con tolerancia a carrera (ignora 23505)
+      const { error: insErr } = await admin
+        .from('profiles')
+        .insert(profilePayload);
+
+      if (insErr) {
+        const duplicate = /duplicate key|23505|unique constraint.*profiles_pkey/i.test(insErr.message || '');
+        if (!duplicate) {
+          return res.status(400).json({ error: `profiles insert failed: ${insErr.message}` });
+        }
+        // Si fue carrera: sin drama, seguimos como éxito.
       }
     }
 
     return res.status(200).json({
       success: true,
-      user_id: newUserId,
+      user_id: userId,
       message: 'Usuario creado/actualizado correctamente',
     });
   } catch (e: any) {
+    console.error('USERS_CREATE v4 fatal:', e);
     return res.status(500).json({ error: e?.message || 'Server error' });
   }
 }
