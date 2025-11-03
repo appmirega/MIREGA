@@ -16,11 +16,9 @@ const handleSubmit = async (e: React.FormEvent) => {
   }
 
   try {
-    // 1) sesión actual
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) throw new Error('No hay sesión activa');
 
-    // 2) SIEMPRE llamar a Vercel
     const resp = await fetch('/api/users/create', {
       method: 'POST',
       headers: {
@@ -36,28 +34,28 @@ const handleSubmit = async (e: React.FormEvent) => {
       }),
     });
 
-    // Leemos el body UNA sola vez
-    let payload: any = null;
-    try { payload = await resp.json(); } catch (_) { payload = null; }
+    // Intentamos leer JSON, si no, texto
+    let body: any = null;
+    let raw = '';
+    try { body = await resp.json(); } catch (_) {
+      try { raw = await resp.text(); } catch { raw = ''; }
+    }
 
-    const duplicatePkey =
-      typeof payload?.error === 'string' &&
-      /duplicate key.*profiles_pkey/i.test(payload.error);
+    const errText =
+      (typeof body?.error === 'string' ? body.error : '') + ' ' + raw;
+    const looksDuplicate =
+      /duplicate key|23505|unique constraint.*profiles_pkey/i.test(errText);
 
-    // 3) Tratar como ÉXITO: 200, 409, o el texto clásico de duplicado
-    if (resp.status === 200 || resp.status === 409 || duplicatePkey) {
+    if (resp.ok || looksDuplicate) {
       setSuccess(
-        payload?.message ||
-          `Administrador ${formData.full_name} listo.`
+        body?.message || `Administrador ${formData.full_name} creado/actualizado.`
       );
 
-      // Opción A: cerrar y volver a la lista
       if (onSuccess) {
-        setTimeout(() => onSuccess(), 500);
+        setTimeout(() => onSuccess(), 400);
         return;
       }
 
-      // Opción B: limpiar para crear otro al tiro
       setFormData({
         full_name: '',
         email: '',
@@ -68,8 +66,8 @@ const handleSubmit = async (e: React.FormEvent) => {
       return;
     }
 
-    // 4) Si llegó acá, es un error real
-    throw new Error(payload?.error || 'No se pudo crear el administrador');
+    // Error real
+    throw new Error(body?.error || raw || 'No se pudo crear el administrador');
   } catch (err: any) {
     setError(err.message || 'Error al crear el administrador');
     console.error(err);
