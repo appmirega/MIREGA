@@ -1,132 +1,133 @@
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "npm:@supabase/supabase-js@2";
+// api/users/create.ts
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { createClient } from '@supabase/supabase-js';
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
-};
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const ANON_KEY     = process.env.SUPABASE_ANON_KEY || '';
 
-interface CreateUserRequest {
-  email: string;
-  password: string;
-  full_name: string;
-  phone?: string;
-  role: "admin" | "technician" | "client" | "developer";
+const ALLOWED_ORIGINS = new Set([
+  'https://mirega.vercel.app',  // prod
+  'http://localhost:5173',      // dev local (vite)
+]);
+
+function setCors(res: VercelResponse, origin = '*') {
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
-Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 200,
-      headers: corsHeaders,
-    });
+function resolveOrigin(req: VercelRequest) {
+  const o = (req.headers.origin || req.headers.referer || '').toString().replace(/\/$/, '');
+  return ALLOWED_ORIGINS.has(o) ? o : 'https://mirega.vercel.app';
+}
+
+const supabaseAdmin = (SUPABASE_URL && SERVICE_ROLE)
+  ? createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } })
+  : null;
+
+function supabaseFromRequest(req: VercelRequest) {
+  const authHeader = (req.headers.authorization || '') as string;
+  return createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: authHeader } } });
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  setCors(res, resolveOrigin(req));
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  if (!supabaseAdmin) {
+    return res.status(500).json({ error: 'Server not initialized. Check SUPABASE_URL / SERVICE_ROLE key.' });
   }
 
   try {
-    const supabaseClient = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-      {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false,
-        },
-      }
-    );
+    const supabase = supabaseFromRequest(req);
 
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      throw new Error("No authorization header");
-    }
+    // 1) Validar sesión y rol del que llama
+    const { data: { user }, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !user) return res.status(401).json({ error: 'No session' });
 
-    const token = authHeader.replace("Bearer ", "");
-    const { data: { user: currentUser }, error: authError } = await supabaseClient.auth.getUser(token);
-
-    if (authError || !currentUser) {
-      throw new Error("Unauthorized");
-    }
-
-    const { data: currentProfile } = await supabaseClient
-      .from("profiles")
-      .select("role")
-      .eq("id", currentUser.id)
+    const { data: caller, error: profErr } = await supabase
+      .from('profiles')
+      .select('role, full_name, email')
+      .eq('id', user.id)
       .single();
+    if (profErr) return res.status(403).json({ error: 'Cannot read caller profile' });
 
-    if (!currentProfile) {
-      throw new Error("Profile not found");
+    const allowed = ['developer', 'admin'];
+    if (!allowed.includes(caller?.role)) {
+      return res.status(403).json({ error: 'Insufficient role', details: caller?.role ?? 'unknown' });
     }
 
-    const requestData: CreateUserRequest = await req.json();
+    // 2) Validación simple de payload
+    const {
+      email, password, full_name, phone, role,
+      // datos opcionales de edificio (los dejamos listos, pero insert a clients está comentado)
+      building_name, building_admin_name, building_admin_email,
+      building_phone, elevators_count, floors, elevator_type,
+    } = (req.body ?? {}) as Record<string, any>;
 
-    if (
-      currentProfile.role !== "developer" &&
-      currentProfile.role !== "admin"
-    ) {
-      throw new Error("Insufficient permissions");
+    const missing: string[] = [];
+    if (!email) missing.push('email');
+    if (!password) missing.push('password');
+    if (!full_name) missing.push('full_name');
+    if (!role) missing.push('role');
+
+    if (missing.length) {
+      return res.status(400).json({ error: 'Missing required fields', details: missing });
     }
 
-    if (
-      currentProfile.role === "admin" &&
-      requestData.role === "developer"
-    ) {
-      throw new Error("Admins cannot create developers");
+    if (caller.role === 'admin' && role === 'developer') {
+      return res.status(403).json({ error: 'Admins cannot create developers' });
     }
 
-    const { data: newUser, error: createError } = await supabaseClient.auth.admin.createUser({
-      email: requestData.email,
-      password: requestData.password,
+    // 3) Crear usuario en Auth (confirmado)
+    const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+      email,
+      password,
       email_confirm: true,
-      user_metadata: {
-        full_name: requestData.full_name,
-        role: requestData.role,
-      },
+      user_metadata: { full_name, role }
     });
+    if (createErr || !created?.user) {
+      return res.status(500).json({ error: 'auth.createUser failed', details: createErr?.message || created });
+    }
+    const newUserId = created.user.id;
 
-    if (createError) throw createError;
-
-    if (newUser.user) {
-      const { error: profileError } = await supabaseClient
-        .from("profiles")
-        .insert({
-          id: newUser.user.id,
-          role: requestData.role,
-          full_name: requestData.full_name,
-          email: requestData.email,
-          phone: requestData.phone || null,
-          is_active: true,
-        });
-
-      if (profileError) throw profileError;
+    // 4) Insertar perfil
+    const { error: insertProfErr } = await supabaseAdmin
+      .from('profiles')
+      .insert({ id: newUserId, email, role, full_name, phone: phone ?? null, is_active: true });
+    if (insertProfErr) {
+      return res.status(500).json({ error: 'insert profiles failed', details: insertProfErr.message });
     }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        user: newUser.user,
-        message: `Usuario ${requestData.full_name} creado exitosamente`,
-      }),
-      {
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-  } catch (error: any) {
-    console.error("Error creating user:", error);
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: error.message,
-      }),
-      {
-        status: 400,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    // 5) (Opcional) Insertar ficha del cliente (ajusta a tu tabla real 'clients')
+    // if (role === 'client' && building_name) {
+    //   const { error: clientErr } = await supabaseAdmin.from('clients').insert({
+    //     user_id: newUserId,
+    //     name: building_name,
+    //     admin_name: building_admin_name,
+    //     admin_email: building_admin_email,
+    //     phone: building_phone,
+    //     elevators_count,
+    //     floors,
+    //     elevator_type,
+    //   });
+    //   if (clientErr) return res.status(500).json({ error: 'insert clients failed', details: clientErr.message });
+    // }
+
+    // 6) (Recomendado) Registro de auditoría — ignora errores si la tabla cambia
+    try {
+      await supabaseAdmin.from('audit_logs').insert({
+        action: 'create_user',
+        actor_id: user.id,
+        target_id: newUserId,
+        details: JSON.stringify({ email, role, created_by: caller?.email || null }),
+      });
+    } catch { /* opcional */ }
+
+    return res.status(200).json({ ok: true, user_id: newUserId });
+  } catch (e: any) {
+    return res.status(500).json({ error: 'Server error', details: e?.message || String(e) });
   }
-});
+}
