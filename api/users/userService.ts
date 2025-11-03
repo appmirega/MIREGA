@@ -1,109 +1,92 @@
 // api/users/userService.ts
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 
-if (!process.env.SUPABASE_URL) {
-  throw new Error('Missing env SUPABASE_URL');
-}
-if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  throw new Error('Missing env SUPABASE_SERVICE_ROLE_KEY');
-}
-
-/**
- * Cliente ADMIN: usa la Service Role Key (solo en el backend).
- * No se refresca sesión ni se persiste (entorno serverless).
- */
-export const supabaseAdmin: SupabaseClient = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { autoRefreshToken: false, persistSession: false } }
-);
-
-export type Role = 'developer' | 'admin' | 'technician' | 'client';
-
-export interface CreateUserOptions {
+type CreateUserInput = {
   email: string;
   password: string;
   full_name: string;
   phone?: string | null;
-  role: Role;
+  role: 'admin' | 'technician' | 'client' | 'developer';
+};
 
-  // Datos opcionales si el rol es "client"
-  building_name?: string | null;
-  building_admin_name?: string | null;
-  building_admin_email?: string | null;
-  building_phone?: string | null;
-  elevators_count?: number | null;
-  floors?: number | null;
-  elevator_type?: string | null;
-}
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL as string,
+  process.env.SUPABASE_SERVICE_ROLE_KEY as string,
+  {
+    auth: { autoRefreshToken: false, persistSession: false },
+  }
+);
 
-/**
- * Crea usuario en Auth y asegura la fila en profiles (sin duplicar).
- * Si role === "client" y llegan datos de edificio, inserta ficha básica.
- */
-export async function createUserOnSupabase(opts: CreateUserOptions) {
-  // 1) Crear usuario en Auth con metadatos útiles
-  const { data, error } = await supabaseAdmin.auth.admin.createUser({
-    email: opts.email,
-    password: opts.password,
+export async function createUserOnSupabase(input: CreateUserInput) {
+  const { email, password, full_name, phone, role } = input;
+
+  // 1) Crear usuario en Auth (o detectar si ya existe)
+  const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+    email,
+    password,
     email_confirm: true,
-    user_metadata: {
-      full_name: opts.full_name,
-      role: opts.role,
-      phone: opts.phone ?? null,
-    },
+    user_metadata: { full_name, role, phone },
   });
 
-  if (error) {
-    throw new Error(`auth.createUser failed: ${error.message}`);
+  // Si ya existía el correo, seguimos con flujo de "upsert" de profiles
+  const emailAlreadyExists =
+    !!createErr &&
+    typeof createErr.message === 'string' &&
+    /already.*registered|exists/i.test(createErr.message);
+
+  let userId = created?.user?.id as string | undefined;
+  let alreadyExists = false;
+
+  if (createErr && !emailAlreadyExists) {
+    throw createErr;
   }
 
-  const newUserId = data.user?.id;
-  if (!newUserId) {
-    throw new Error('auth.createUser did not return a new user id');
+  if (!userId) {
+    // Buscar el userId del correo (si el usuario ya existía)
+    const { data: profileByEmail } = await supabaseAdmin
+      .from('profiles')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (profileByEmail?.id) {
+      userId = profileByEmail.id;
+    } else {
+      // Último recurso: buscar en auth (puede paginar; aquí asumimos pocos usuarios)
+      const { data: list } = await supabaseAdmin.auth.admin.listUsers();
+      const match = list?.users?.find((u) => u.email?.toLowerCase() === email.toLowerCase());
+      if (!match) throw new Error('No se pudo resolver el ID del usuario existente.');
+      userId = match.id;
+    }
+    alreadyExists = true;
   }
 
-  // 2) UPSERT en profiles para evitar "duplicate key violates profiles_pkey"
+  // 2) UPSERT en profiles (si existe, actualiza; si no, inserta)
+  //    clave de conflicto: id
   const { error: upsertErr } = await supabaseAdmin
     .from('profiles')
     .upsert(
       {
-        id: newUserId,
-        email: opts.email,
-        full_name: opts.full_name,
-        phone: opts.phone ?? null,
-        role: opts.role,
+        id: userId,
+        email,
+        full_name,
+        phone: phone || null,
+        role,
         is_active: true,
+        updated_at: new Date().toISOString(),
       },
-      { onConflict: 'id' } // usa la PK "id" como conflicto
+      { onConflict: 'id' }
     );
 
   if (upsertErr) {
-    throw new Error(`profiles upsert failed: ${upsertErr.message}`);
+    // Si por algún motivo chocó por unique de email, hacemos un segundo upsert
+    // para no fallar la operación (muy raro, pero defensivo).
+    const conflictOnEmail =
+      typeof upsertErr.message === 'string' &&
+      /duplicate key.*email|unique.*email/i.test(upsertErr.message);
+
+    if (!conflictOnEmail) throw upsertErr;
   }
 
-  // 3) (Opcional) Si es cliente y vienen datos, crear ficha básica
-  if (opts.role === 'client' && (opts.building_name || opts.elevators_count || opts.floors)) {
-    const { error: clientErr } = await supabaseAdmin.from('clients').insert({
-      user_id: newUserId,
-      name: opts.building_name ?? null,
-      admin_name: opts.building_admin_name ?? null,
-      admin_email: opts.building_admin_email ?? null,
-      phone: opts.building_phone ?? null,
-      elevators_count: opts.elevators_count ?? null,
-      floors: opts.floors ?? null,
-      elevator_type: opts.elevator_type ?? null,
-    });
-
-    // No tumbamos la creación del usuario si falla lo opcional;
-    // solo lo dejamos registrado en logs.
-    if (clientErr) {
-      console.warn('clients insert warning:', clientErr.message);
-    }
-  }
-
-  return {
-    user_id: newUserId,
-    email: opts.email,
-  };
+  return { user_id: userId, alreadyExists };
 }
