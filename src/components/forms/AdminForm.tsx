@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { supabase } from '../../lib/supabase';
 import { Shield, User, Mail, Phone, Eye, EyeOff, Key, X, AlertCircle, CheckCircle } from 'lucide-react';
 
 export interface AdminFormProps {
@@ -19,6 +18,7 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (password !== confirmPassword) {
       setMessage({ type: 'error', text: 'Las contraseñas no coinciden' });
       return;
@@ -40,21 +40,34 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
         }),
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'No se pudo crear el administrador');
+      // Leer primero como texto y luego intentar parsear a JSON
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = null;
       }
 
-      setMessage({ type: 'success', text: `Administrador ${fullName} creado exitosamente` });
+      if (!res.ok) {
+        throw new Error(data?.error || text || 'No se pudo crear el administrador');
+      }
+
+      setMessage({
+        type: 'success',
+        text: data?.message || `Administrador ${fullName} creado exitosamente`,
+      });
+
+      // Limpiar formulario
       setFullName('');
       setEmail('');
       setPhone('');
       setPassword('');
       setConfirmPassword('');
 
-      if (onSuccess) onSuccess();
+      onSuccess?.();
     } catch (error: any) {
-      setMessage({ type: 'error', text: error.message });
+      setMessage({ type: 'error', text: error?.message || 'Error inesperado' });
     } finally {
       setLoading(false);
     }
@@ -195,4 +208,3 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
     </form>
   );
 }
-export { AdminForm };
