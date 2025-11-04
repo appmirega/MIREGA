@@ -6,16 +6,6 @@ export interface AdminFormProps {
   onCancel?: () => void;
 }
 
-async function parseResponse(res: Response) {
-  const ct = res.headers.get('content-type') || '';
-  const isJSON = ct.includes('application/json');
-  try {
-    return isJSON ? await res.json() : { ok: false, error: await res.text() };
-  } catch {
-    return { ok: false, error: 'Respuesta no válida del servidor' };
-  }
-}
-
 export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -25,6 +15,11 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const safeParse = async (res: Response) => {
+    const txt = await res.text();
+    try { return JSON.parse(txt); } catch { return { success: false, error: txt || 'Respuesta no JSON' }; }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,10 +44,10 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
         }),
       });
 
-      const data = await parseResponse(res);
+      const result = await safeParse(res);
 
-      if (!res.ok || data?.ok === false) {
-        throw new Error(data?.error || 'No se pudo crear el administrador');
+      if (!res.ok || result?.success === false) {
+        throw new Error(result?.error || 'No se pudo crear el administrador');
       }
 
       setMessage({ type: 'success', text: `Administrador ${fullName} creado exitosamente` });
@@ -63,7 +58,7 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
       setConfirmPassword('');
       onSuccess?.();
     } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Error inesperado' });
+      setMessage({ type: 'error', text: error.message || 'Error del servidor' });
     } finally {
       setLoading(false);
     }
@@ -179,7 +174,11 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
 
       <div className="flex justify-end gap-2 mt-4">
         {onCancel && (
-          <button type="button" onClick={onCancel} className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-100">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-100"
+          >
             Cancelar
           </button>
         )}
@@ -194,4 +193,3 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
     </form>
   );
 }
-export { AdminForm };
