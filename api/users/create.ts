@@ -1,20 +1,19 @@
-// api/users/create.ts
+// /api/users/create.ts
 import { createOrGetAuthUser, upsertProfile } from './userService.js';
 
 export default async function handler(req: any, res: any) {
+  // Siempre JSON
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+
   try {
     if (req.method !== 'POST') {
-      return res
-        .status(405)
-        .json({ ok: false, error: 'Método no permitido. Usa POST.' });
+      return res.status(405).json({ ok: false, error: 'Método no permitido. Usa POST.' });
     }
 
     const { email, password, full_name, phone, role } = req.body ?? {};
 
     if (!email || !password || !full_name || !role) {
-      return res
-        .status(400)
-        .json({ ok: false, error: 'Faltan campos obligatorios.' });
+      return res.status(400).json({ ok: false, error: 'Faltan campos obligatorios.' });
     }
 
     const authUser = await createOrGetAuthUser(email, password);
@@ -32,15 +31,11 @@ export default async function handler(req: any, res: any) {
       message: `Usuario ${full_name} creado correctamente`,
       userId: authUser.id,
     });
-  } catch (error: any) {
-    console.error('Error en create.ts:', error);
-
-    // ⚠️ Siempre devolvemos JSON válido
+  } catch (err: any) {
+    console.error('Error en /api/users/create:', err);
     return res.status(500).json({
       ok: false,
-      error:
-        error?.message ||
-        'Error inesperado del servidor (create.ts)',
+      error: err?.message || 'Error inesperado del servidor (create.ts)',
     });
   }
 }
