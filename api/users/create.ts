@@ -2,21 +2,20 @@
 import { createOrGetAuthUser, upsertProfile } from './userService.js';
 
 export default async function handler(req: any, res: any) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed' });
-    return;
-  }
-
   try {
+    if (req.method !== 'POST') {
+      return res
+        .status(405)
+        .json({ ok: false, error: 'Método no permitido. Usa POST.' });
+    }
+
     const { email, password, full_name, phone, role } = req.body ?? {};
 
     if (!email || !password || !full_name || !role) {
-      res.status(400).json({ error: 'Faltan campos obligatorios' });
-      return;
+      return res
+        .status(400)
+        .json({ ok: false, error: 'Faltan campos obligatorios.' });
     }
-
-    // ⚠️ Aquí podrías validar el JWT del usuario que crea (admin/developer) si quieres
-    // por ahora, dejamos la validación a nivel UI/flow
 
     const authUser = await createOrGetAuthUser(email, password);
 
@@ -25,18 +24,23 @@ export default async function handler(req: any, res: any) {
       email: authUser.email || email,
       full_name,
       phone: phone ?? null,
-      role, // 'admin' | 'technician' | 'client' | 'developer'
+      role,
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       ok: true,
+      message: `Usuario ${full_name} creado correctamente`,
       userId: authUser.id,
-      message: `Usuario ${full_name} creado/actualizado`,
     });
-  } catch (e: any) {
-    res.status(400).json({
+  } catch (error: any) {
+    console.error('Error en create.ts:', error);
+
+    // ⚠️ Siempre devolvemos JSON válido
+    return res.status(500).json({
       ok: false,
-      error: e?.message || 'Error inesperado',
+      error:
+        error?.message ||
+        'Error inesperado del servidor (create.ts)',
     });
   }
 }
