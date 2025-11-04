@@ -1,61 +1,99 @@
-// /api/users/create.js
+// api/users/create.ts
+/* Serverless function en Vercel que SIEMPRE responde JSON e implementa CORS.
+   Crea (o recupera) el usuario en Auth y hace UPSERT del profile (idempotente).
+*/
+
 import { createClient } from '@supabase/supabase-js';
 
-function setCORS(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Info, apikey');
-}
-
-function sendJSON(res, status, payload) {
+const ok = (res: any, status: number, payload: any) => {
   res.status(status);
-  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(payload));
-}
+};
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabase = createClient(url, serviceKey);
+const setCORS = (res: any) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+};
 
-export default async function handler(req, res) {
+export default async function handler(req: any, res: any) {
   setCORS(res);
-  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  if (req.method === 'OPTIONS') return ok(res, 200, { ok: true });
+
+  if (req.method !== 'POST') {
+    return ok(res, 405, { ok: false, error: 'Method not allowed' });
+  }
 
   try {
-    if (req.method !== 'POST') {
-      return sendJSON(res, 405, { success: false, error: 'Method Not Allowed' });
+    // El body puede venir como string o como objeto
+    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
+    const { email, password, full_name, phone, role } = body;
+
+    if (!email || !password || !full_name || !role) {
+      return ok(res, 400, { ok: false, error: 'Faltan campos obligatorios' });
     }
 
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-    const { email, password, full_name, phone, role } = body || {};
+    const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    const SERVICE_KEY =
+      process.env.SUPABASE_SERVICE_ROLE ||
+      process.env.SUPABASE_SERVICE_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    if (!email || !password) {
-      return sendJSON(res, 400, { success: false, error: 'Faltan campos obligatorios' });
+    if (!SUPABASE_URL || !SERVICE_KEY) {
+      return ok(res, 500, { ok: false, error: 'Config de Supabase ausente en variables de entorno' });
     }
 
-    // 1) Crear (o recuperar) usuario en Auth
-    const { data, error } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: { full_name, phone, role },
-    });
+    const admin = createClient(SUPABASE_URL, SERVICE_KEY);
 
-    if (error) throw error;
-    const userId = data.user.id;
+    // 1) Buscar usuario por email
+    let userId: string | null = null;
+    const { data: existingUser, error: getErr } = await admin.auth.admin.getUserByEmail(email);
+    if (getErr && getErr.message !== 'User not found') {
+      return ok(res, 500, { ok: false, error: `Auth error (getUserByEmail): ${getErr.message}` });
+    }
 
-    // 2) Upsert del perfil (idempotente)
-    const { error: upErr } = await supabase
+    if (existingUser?.user?.id) {
+      userId = existingUser.user.id;
+    } else {
+      // 2) Crear usuario
+      const { data: created, error: createErr } = await admin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+      });
+      if (createErr) {
+        return ok(res, 500, { ok: false, error: `Auth error (createUser): ${createErr.message}` });
+      }
+      userId = created.user.id;
+    }
+
+    // 3) UPSERT del profile (idempotente)
+    const { error: upsertErr } = await admin
       .from('profiles')
       .upsert(
-        { id: userId, email, full_name, phone, role, status: 'active' },
+        {
+          id: userId,
+          email,
+          full_name,
+          phone: phone ?? null,
+          role,
+          status: 'active',
+          updated_at: new Date().toISOString(),
+        },
         { onConflict: 'id' }
       );
 
-    if (upErr) throw upErr;
+    if (upsertErr) {
+      // Nunca devolvemos HTML: siempre JSON
+      return ok(res, 500, { ok: false, error: `DB error (upsert profiles): ${upsertErr.message}` });
+    }
 
-    return sendJSON(res, 200, { success: true, user_id: userId });
-  } catch (err) {
-    return sendJSON(res, 500, { success: false, error: err.message || 'Server error' });
+    // 4) Respuesta OK siempre JSON
+    return ok(res, 200, { ok: true, id: userId });
+  } catch (e: any) {
+    // Si el body llegó malformado o cualquier otra cosa
+    return ok(res, 500, { ok: false, error: `SERVER: ${e?.message || 'unknown error'}` });
   }
 }
