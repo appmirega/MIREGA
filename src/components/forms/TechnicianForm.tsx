@@ -7,20 +7,9 @@ interface TechnicianFormProps {
   onCancel?: () => void;
 }
 
-async function parseResponse(res: Response) {
-  const ct = res.headers.get('content-type') || '';
-  const isJSON = ct.includes('application/json');
-  try {
-    return isJSON ? await res.json() : { ok: false, error: await res.text() };
-  } catch {
-    return { ok: false, error: 'Respuesta no válida del servidor' };
-  }
-}
-
 export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   const [formData, setFormData] = useState({
     full_name: '',
     email: '',
@@ -31,6 +20,11 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
   });
 
   const specializations = ['Hidráulico', 'Electromecánico', 'Tracción', 'Todos los tipos', 'Otro'];
+
+  const safeParse = async (res: Response) => {
+    const txt = await res.text();
+    try { return JSON.parse(txt); } catch { return { success: false, error: txt || 'Respuesta no JSON' }; }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,9 +63,9 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
         }),
       });
 
-      const data = await parseResponse(resp);
-      if (!resp.ok || data?.ok === false) {
-        throw new Error(data?.error || 'No se pudo crear el técnico');
+      const result = await safeParse(resp);
+      if (!resp.ok || result?.success === false) {
+        throw new Error(result?.error || 'No se pudo crear el técnico');
       }
 
       setFormData({
@@ -122,8 +116,7 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
-              <Mail className="w-4 h-4 inline mr-1" />
-              Email *
+              <Mail className="w-4 h-4 inline mr-1" /> Email *
             </label>
             <input
               type="email"
@@ -137,8 +130,7 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
-              <Phone className="w-4 h-4 inline mr-1" />
-              Teléfono *
+              <Phone className="w-4 h-4 inline mr-1" /> Teléfono *
             </label>
             <input
               type="tel"
@@ -158,18 +150,15 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
               className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
             >
               <option value="">Seleccionar especialización</option>
-              {specializations.map((spec) => (
-                <option key={spec} value={spec}>
-                  {spec}
-                </option>
+              {specializations.map((s) => (
+                <option key={s} value={s}>{s}</option>
               ))}
             </select>
           </div>
 
           <div className="md:col-span-2 border-t border-slate-200 pt-6">
             <h3 className="text-lg font-semibold text-slate-900 mb-4">
-              <Key className="w-5 h-5 inline mr-2" />
-              Credenciales de Acceso
+              <Key className="w-5 h-5 inline mr-2" /> Credenciales de Acceso
             </h3>
           </div>
 
