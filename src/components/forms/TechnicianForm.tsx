@@ -1,16 +1,25 @@
 import { useState } from 'react';
-import { supabase } from '../../lib/supabase';
 import { UserPlus, Mail, Phone, Key, X } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
 
 interface TechnicianFormProps {
   onSuccess?: () => void;
   onCancel?: () => void;
 }
 
+async function parseResponse(res: Response) {
+  const ct = res.headers.get('content-type') || '';
+  const isJSON = ct.includes('application/json');
+  try {
+    return isJSON ? await res.json() : { ok: false, error: await res.text() };
+  } catch {
+    return { ok: false, error: 'Respuesta no válida del servidor' };
+  }
+}
+
 export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [okMsg, setOkMsg] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     full_name: '',
@@ -29,7 +38,6 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
 
     setLoading(true);
     setError(null);
-    setOkMsg(null);
 
     if (formData.password !== formData.confirmPassword) {
       setError('Las contraseñas no coinciden');
@@ -43,9 +51,7 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
     }
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('No hay sesión activa');
 
       const resp = await fetch('/api/users/create', {
@@ -63,20 +69,10 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
         }),
       });
 
-      // Igual que en AdminForm: leemos como texto y tratamos de parsear
-      const text = await resp.text();
-      let result: any = null;
-      try {
-        result = text ? JSON.parse(text) : null;
-      } catch {
-        result = null;
+      const data = await parseResponse(resp);
+      if (!resp.ok || data?.ok === false) {
+        throw new Error(data?.error || 'No se pudo crear el técnico');
       }
-
-      if (!resp.ok || result?.success === false || result?.ok === false) {
-        throw new Error(result?.error || text || 'No se pudo crear el técnico');
-      }
-
-      setOkMsg(result?.message || 'Técnico creado correctamente');
 
       setFormData({
         full_name: '',
@@ -86,10 +82,9 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
         password: '',
         confirmPassword: '',
       });
-
       onSuccess?.();
     } catch (err: any) {
-      setError(err?.message || 'Error al crear el técnico');
+      setError(err.message || 'Error al crear el técnico');
     } finally {
       setLoading(false);
     }
@@ -109,12 +104,7 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
         )}
       </div>
 
-      {error && (
-        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
-      )}
-      {okMsg && (
-        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg text-green-700">{okMsg}</div>
-      )}
+      {error && <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>}
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
