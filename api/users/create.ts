@@ -1,4 +1,4 @@
-// api/users/create.ts
+// /api/users/create.ts
 export const config = { runtime: 'edge' };
 
 const CORS_HEADERS: Record<string, string> = {
@@ -27,10 +27,10 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ ok: false, error: 'Method Not Allowed' }, 405);
     }
 
-    const text = await req.text();
+    const raw = await req.text();
     let body: any = {};
     try {
-      body = text ? JSON.parse(text) : {};
+      body = raw ? JSON.parse(raw) : {};
     } catch {
       return json({ ok: false, error: 'Invalid JSON body' }, 400);
     }
@@ -40,14 +40,17 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ ok: false, error: 'Missing required fields' }, 400);
     }
 
-    // ⚠️ Aquí deberías poner tu lógica real con Supabase o tu userService.
-    // Por ahora simulamos un éxito para confirmar que el handler responde bien.
+    // TODO: Coloca aquí tu lógica real con Supabase (crear usuario + profiles).
+    // Mientras tanto, devolvemos éxito para validar el flujo end-to-end.
+    // IMPORTANTE: Cuando agregues la lógica real, mantén SIEMPRE los return json(...)
+    // para que el frontend no se rompa si algo falla.
+    console.log('USERS_CREATE v5', { email, role, full_name, phone });
     return json({
       ok: true,
       message: `Usuario ${full_name} (${role || 'admin'}) procesado correctamente`,
     });
   } catch (e: any) {
-    // Captura cualquier fallo interno antes de que Vercel lo intercepte
+    console.error('USERS_CREATE v5 ERROR', e);
     return json({ ok: false, error: e?.message || 'Internal Server Error' }, 500);
   }
 }
