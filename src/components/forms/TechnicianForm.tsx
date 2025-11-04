@@ -10,6 +10,7 @@ interface TechnicianFormProps {
 export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     full_name: '',
@@ -28,6 +29,7 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
 
     setLoading(true);
     setError(null);
+    setOkMsg(null);
 
     if (formData.password !== formData.confirmPassword) {
       setError('Las contraseñas no coinciden');
@@ -41,7 +43,9 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
     }
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session) throw new Error('No hay sesión activa');
 
       const resp = await fetch('/api/users/create', {
@@ -59,12 +63,21 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
         }),
       });
 
-      const result = await resp.json().catch(() => ({}));
-      if (!resp.ok || result?.success === false) {
-        throw new Error(result?.error || 'No se pudo crear el técnico');
+      // Igual que en AdminForm: leemos como texto y tratamos de parsear
+      const text = await resp.text();
+      let result: any = null;
+      try {
+        result = text ? JSON.parse(text) : null;
+      } catch {
+        result = null;
       }
 
-      // listo (creado o recuperado)
+      if (!resp.ok || result?.success === false || result?.ok === false) {
+        throw new Error(result?.error || text || 'No se pudo crear el técnico');
+      }
+
+      setOkMsg(result?.message || 'Técnico creado correctamente');
+
       setFormData({
         full_name: '',
         email: '',
@@ -73,9 +86,10 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
         password: '',
         confirmPassword: '',
       });
+
       onSuccess?.();
     } catch (err: any) {
-      setError(err.message || 'Error al crear el técnico');
+      setError(err?.message || 'Error al crear el técnico');
     } finally {
       setLoading(false);
     }
@@ -95,9 +109,13 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
         )}
       </div>
 
-      {error && <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>}
+      {error && (
+        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
+      )}
+      {okMsg && (
+        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg text-green-700">{okMsg}</div>
+      )}
 
-      {/* …tu UI original (inputs)… */}
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="md:col-span-2">
