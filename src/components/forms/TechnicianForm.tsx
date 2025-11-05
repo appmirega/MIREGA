@@ -1,6 +1,8 @@
+// src/components/forms/TechnicianForm.tsx
 import { useState } from 'react';
-import { UserPlus, Mail, Phone, Key, X } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { UserPlus, Mail, Phone, Key, X } from 'lucide-react';
+import { fetchJson } from '../../utils/fetchJson';
 
 interface TechnicianFormProps {
   onSuccess?: () => void;
@@ -10,6 +12,7 @@ interface TechnicianFormProps {
 export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const [formData, setFormData] = useState({
     full_name: '',
     email: '',
@@ -20,11 +23,6 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
   });
 
   const specializations = ['Hidráulico', 'Electromecánico', 'Tracción', 'Todos los tipos', 'Otro'];
-
-  const safeParse = async (res: Response) => {
-    const txt = await res.text();
-    try { return JSON.parse(txt); } catch { return { success: false, error: txt || 'Respuesta no JSON' }; }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,10 +43,12 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
     }
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session) throw new Error('No hay sesión activa');
 
-      const resp = await fetch('/api/users/create', {
+      await fetchJson('/api/users/create', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -63,11 +63,7 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
         }),
       });
 
-      const result = await safeParse(resp);
-      if (!resp.ok || result?.success === false) {
-        throw new Error(result?.error || 'No se pudo crear el técnico');
-      }
-
+      // Limpia y cierra
       setFormData({
         full_name: '',
         email: '',
@@ -78,7 +74,7 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
       });
       onSuccess?.();
     } catch (err: any) {
-      setError(err.message || 'Error al crear el técnico');
+      setError(err?.message || 'Error al crear el técnico');
     } finally {
       setLoading(false);
     }
@@ -116,7 +112,8 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
-              <Mail className="w-4 h-4 inline mr-1" /> Email *
+              <Mail className="w-4 h-4 inline mr-1" />
+              Email *
             </label>
             <input
               type="email"
@@ -130,7 +127,8 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
-              <Phone className="w-4 h-4 inline mr-1" /> Teléfono *
+              <Phone className="w-4 h-4 inline mr-1" />
+              Teléfono *
             </label>
             <input
               type="tel"
@@ -150,15 +148,18 @@ export default function TechnicianForm({ onSuccess, onCancel }: TechnicianFormPr
               className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
             >
               <option value="">Seleccionar especialización</option>
-              {specializations.map((s) => (
-                <option key={s} value={s}>{s}</option>
+              {specializations.map((spec) => (
+                <option key={spec} value={spec}>
+                  {spec}
+                </option>
               ))}
             </select>
           </div>
 
           <div className="md:col-span-2 border-t border-slate-200 pt-6">
             <h3 className="text-lg font-semibold text-slate-900 mb-4">
-              <Key className="w-5 h-5 inline mr-2" /> Credenciales de Acceso
+              <Key className="w-5 h-5 inline mr-2" />
+              Credenciales de Acceso
             </h3>
           </div>
 
