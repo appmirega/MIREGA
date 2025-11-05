@@ -1,5 +1,7 @@
+// src/components/forms/AdminForm.tsx
 import { useState } from 'react';
 import { Shield, User, Mail, Phone, Eye, EyeOff, Key, X, AlertCircle, CheckCircle } from 'lucide-react';
+import { fetchJson } from '../../utils/fetchJson';
 
 export interface AdminFormProps {
   onSuccess?: () => void;
@@ -16,13 +18,10 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const safeParse = async (res: Response) => {
-    const txt = await res.text();
-    try { return JSON.parse(txt); } catch { return { success: false, error: txt || 'Respuesta no JSON' }; }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+
     if (password !== confirmPassword) {
       setMessage({ type: 'error', text: 'Las contraseñas no coinciden' });
       return;
@@ -32,7 +31,7 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
     setMessage(null);
 
     try {
-      const res = await fetch('/api/users/create', {
+      await fetchJson('/api/users/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -44,12 +43,6 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
         }),
       });
 
-      const result = await safeParse(res);
-
-      if (!res.ok || result?.success === false) {
-        throw new Error(result?.error || 'No se pudo crear el administrador');
-      }
-
       setMessage({ type: 'success', text: `Administrador ${fullName} creado exitosamente` });
       setFullName('');
       setEmail('');
@@ -57,8 +50,8 @@ export default function AdminForm({ onSuccess, onCancel }: AdminFormProps) {
       setPassword('');
       setConfirmPassword('');
       onSuccess?.();
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Error del servidor' });
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err?.message || 'No se pudo crear el administrador' });
     } finally {
       setLoading(false);
     }
